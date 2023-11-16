@@ -9,17 +9,16 @@ import {IERC165} from '@openzeppelin/contracts/utils/introspection/IERC165.sol';
  * @author https://getclave.io
  */
 interface IR1Validator is IERC165 {
-    /**
-     * @notice Allows to validate secp256r1 ec signatures
-     * @param signedHash bytes32          - hash of the data that is signed by the key
-     * @param signature bytes             - signature
-     * @param pubKey bytes32[2]           - public key coordinates array for the x and y values
-     * @return valid bool                 - validation result
-     */
+    // /**
+    //  * @notice Allows to validate secp256r1 ec signatures
+    //  * @param signedHash bytes32          - hash of the data that is signed by the key
+    //  * @param signature bytes             - signature
+    //  * @param pubKey bytes32[2]           - public key coordinates array for the x and y values
+    //  * @return valid bool                 - validation result
+    //  */
     function validateSignature(
         bytes32 signedHash,
-        bytes calldata signature,
-        bytes32[2] calldata pubKey
+        bytes calldata signature
     ) external view returns (bool valid);
 }
 
