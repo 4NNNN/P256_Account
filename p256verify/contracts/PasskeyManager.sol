@@ -4,7 +4,7 @@ import "./Base64.sol";
 //import "./P256.sol";
 
 
-contract SpendLimit {
+contract PasskeyManager {
     struct PassKeyId {
         uint256 pubKeyX;
         uint256 pubKeyY;

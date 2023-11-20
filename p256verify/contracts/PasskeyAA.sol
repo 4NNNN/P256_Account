@@ -5,18 +5,20 @@ import "@matterlabs/zksync-contracts/l2/system-contracts/interfaces/IAccount.sol
 import "@matterlabs/zksync-contracts/l2/system-contracts/libraries/TransactionHelper.sol";
 // Access zkSync system contracts for nonce validation via NONCE_HOLDER_SYSTEM_CONTRACT
 import "@matterlabs/zksync-contracts/l2/system-contracts/Constants.sol";
+import "@openzeppelin/contracts/interfaces/IERC1271.sol";
+import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 // to call non-view function of system contracts
 import "@matterlabs/zksync-contracts/l2/system-contracts/libraries/SystemContractsCaller.sol";
-import {IR1Validator, IERC165} from './interfaces/IValidator.sol';
 import "./PasskeyManager.sol";
 import "hardhat/console.sol";
 
-contract Account is IAccount, PasskeyManager, IR1Validator {
+
+contract PasskeyAccount is IAccount, PasskeyManager, IERC1271 {
     // to get transaction hash
     using TransactionHelper for Transaction;
     address constant P256_VERIFIER = 0x18c994fD76764aE2229b85978361D23bCFc2aE5a;
 
-    // bytes4 constant EIP1271_SUCCESS_RETURN_VALUE = 0x1626ba7e;
+    bytes4 constant EIP1271_SUCCESS_RETURN_VALUE = 0x1626ba7e;
 
     modifier onlyBootloader() {
         require(
@@ -26,6 +28,8 @@ contract Account is IAccount, PasskeyManager, IR1Validator {
         // Continue execution if called from the bootloader.
         _;
     }
+
+    constructor(){}
 
     function validateTransaction(
         bytes32,
@@ -71,22 +75,51 @@ contract Account is IAccount, PasskeyManager, IR1Validator {
             "Not enough balance for fee + value"
         );
 
-        if (
-            _validateSignature(txHash, _transaction.signature) ==
-            true
-        ) {
+        if (isValidSignature(txHash,_transaction.signature) == EIP1271_SUCCESS_RETURN_VALUE) 
+        {
             magic = ACCOUNT_VALIDATION_SUCCESS_MAGIC;
-        } else {
+        } 
+        else {
             magic = bytes4(0);
         }
     }
 
-    function validateSignature(
-        bytes32 signedHash,
-        bytes calldata signature
-    ) external view returns (bool valid){
-        bool success = _validateSignature(signedHash,signature);
-        if (success) valid = true;
+
+    function isValidSignature(
+        bytes32 _hash,
+        bytes memory _signature
+    ) public view override returns (bytes4 magic) {
+        magic = EIP1271_SUCCESS_RETURN_VALUE;
+        (bytes32 keyHash, bytes32 sigx, bytes32 sigy, bytes memory authenticatorData, string memory clientDataJSONPre, string memory clientDataJSONPost) = 
+            abi.decode(_signature, (bytes32, bytes32, bytes32, bytes, string, string));
+    
+        // You'll need to implement Base64.encode and string.concat
+        string memory opHashBase64 = Base64.encode(bytes.concat(_hash));
+        string memory clientDataJSON = string.concat(clientDataJSONPre, opHashBase64, clientDataJSONPost);
+        bytes32 clientHash = sha256(bytes(clientDataJSON));
+        bytes32 sigHash = sha256(bytes.concat(authenticatorData, clientHash));
+        PassKeyId memory passKey = authorisedKeys[keyHash];
+        require(passKey.pubKeyX != 0 && passKey.pubKeyY != 0, "Key not found");
+     
+        // Uncomment this if necessary
+        // require(callVerifier(sigHash, [sigx, sigy] , [passKey.pubKeyX, passKey.pubKeyY]), "Invalid signature");
+
+        bytes memory input = abi.encodePacked(sigHash, sigx, sigy, passKey.pubKeyX, passKey.pubKeyY);
+
+        (bool success, bytes memory data) = P256_VERIFIER.staticcall(input);
+        require(success); // never reverts, always returns 0 or 1
+        console.logBytes(data);
+
+        uint256 returnValue;
+        // Return true if the call was successful and the return value is 1
+        if (success && data.length > 0) {
+            assembly {
+                returnValue := mload(add(data, 0x20))
+            }
+            if (returnValue == 1) return magic;
+        }
+        //Otherwise return false for the unsucessful calls and invalid signatures
+        return 0;
     }
 
     function executeTransaction(
@@ -137,61 +170,6 @@ contract Account is IAccount, PasskeyManager, IR1Validator {
         _executeTransaction(_transaction);
     }
 
-    function _validateSignature(
-        bytes32 _hash,
-        bytes memory _signature
-    ) internal view returns (bool) {
-        (bytes32 keyHash, bytes32 sigx, bytes32 sigy, bytes memory authenticatorData, string memory clientDataJSONPre, string memory clientDataJSONPost) = 
-            abi.decode(_signature, (bytes32, bytes32, bytes32, bytes, string, string));
-
-        string memory opHashBase64 = Base64.encode(bytes.concat(_hash));
-        string memory clientDataJSON = string.concat(clientDataJSONPre, opHashBase64, clientDataJSONPost);
-        bytes32 clientHash = sha256(bytes(clientDataJSON));
-        bytes32 sigHash = sha256(bytes.concat(authenticatorData, clientHash));
-        PassKeyId memory passKey = authorisedKeys[keyHash];
-        require(passKey.pubKeyX != 0 && passKey.pubKeyY != 0, "Key not found");
-        require(callVerifier(sigHash, [sigx, sigy] , [passKey.pubKeyX, passKey.pubKeyY]), "Invalid signature");
-        return true;
-    }
-
-    function getEncodeHash(Transaction calldata _transaction) public returns (bytes32){ 
-        bytes32 txh;
-        txh = _transaction.encodeHash();
-        console.logBytes32(txh);
-        return txh; 
-    }
-
-    function callVerifier(
-        bytes32 hash,
-        bytes32[2] memory rs,
-        uint256[2] memory pubKey
-    ) internal view returns (bool) {
-        /**
-         * Prepare the input format
-         * input[  0: 32] = signed data hash
-         * input[ 32: 64] = signature r
-         * input[ 64: 96] = signature s
-         * input[ 96:128] = public key x
-         * input[128:160] = public key y
-         */
-        bytes memory input = abi.encodePacked(hash, rs[0], rs[1], pubKey[0], pubKey[1]);
-
-        (bool success, bytes memory data) = P256_VERIFIER.staticcall(input);
-        require(success); // never reverts, always returns 0 or 1
-        console.logBytes(data);
-
-        uint256 returnValue;
-        // Return true if the call was successful and the return value is 1
-        if (success && data.length > 0) {
-            assembly {
-                returnValue := mload(add(data, 0x20))
-            }
-            if (returnValue == 1) return true;
-        }
-        // Otherwise return false for the unsucessful calls and invalid signatures
-        return false;
-    }
-
     function payForTransaction(
         bytes32,
         bytes32,
@@ -207,12 +185,6 @@ contract Account is IAccount, PasskeyManager, IR1Validator {
         Transaction calldata _transaction
     ) external payable override onlyBootloader {
         _transaction.processPaymasterInput();
-    }
-
-    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return
-            interfaceId == type(IR1Validator).interfaceId ||
-            interfaceId == type(IERC165).interfaceId;
     }
 
     fallback() external {
